@@ -26,6 +26,8 @@ On the first launch, Cuevio installs its Python dependencies in the project fold
 
 Cuevio then opens the menu. Enter **play** (1) to start playback, **settings** (3) to change playback options, or **setup** (4) to update your saved sign-in.
 
+Choose **course** (6) to see the subject picker. Physics I is available, and the second entry is a demo for future courses.
+
 | Command | What it does |
 | --- | --- |
 | .\run-uninet.cmd | Set up sign-in on the first launch, then open the menu |
@@ -37,6 +39,7 @@ Cuevio then opens the menu. Enter **play** (1) to start playback, **settings** (
 
 ## Playback
 
+- Cuevio scans available weeks before playback. The queue bar tracks clips credited by UniNet, shows the current clip and its position, and estimates the remaining viewing time from the durations available in the portal.
 - In **Settings**, choose whether to start muted and whether to stop after one credited video or continue through the queue.
 - Type a command in the **cuevio ›** field and press **Enter**. Press **Tab** to complete a command or **↑** to recall one you entered.
 - New videos play from the beginning. Partially watched videos continue from the position saved by UniNet when the playlist shows a resume time.

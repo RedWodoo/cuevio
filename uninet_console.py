@@ -1,13 +1,15 @@
 import asyncio
 import logging
+import math
 import sys
 import time
 import webbrowser
 from contextlib import suppress
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import create_app_session
+from prompt_toolkit.application import create_app_session, get_app
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -21,7 +23,7 @@ from uninet_settings import COURSE_NAME, DATA_DIR
 
 
 NAME = "Cuevio"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 REPOSITORY_URL = "https://github.com/RedWodoo/cuevio"
 LOG_PATH = DATA_DIR / "logs" / "uninet.log"
 
@@ -53,7 +55,12 @@ _ALIASES = {alias: command for command, aliases in _COMMANDS.items() for alias i
 _CHAT_STYLE = Style.from_dict({
     "prompt": "bold #e1a5ff",
     "placeholder": "#9a8aa9",
-    "bottom-toolbar": "noreverse bg:#292236 #d9c7ed",
+    "bottom-toolbar": "noreverse bg:#242033 #e1d7ee",
+    "queue-label": "bold #eda7ff",
+    "queue-fill": "#aee9d2",
+    "queue-track": "#665879",
+    "queue-muted": "#b0a0c0",
+    "queue-paused": "bold #ffd290",
 })
 _CHAT_PROMPT = FormattedText([("class:prompt", "  cuevio › ")])
 _CHAT_HINT = " pause/p  play/r  mute/m  sound/u  stop/q  help/h "
@@ -65,6 +72,89 @@ _EVENTS = {
     "control": ("ПУЛЬТ", "bright_magenta", logging.INFO),
     "error": ("СБОЙ", "bright_red", logging.ERROR),
 }
+
+
+@dataclass(frozen=True)
+class QueueProgress:
+    phase: str = "Подключение"
+    total: int | None = None
+    completed: int = 0
+    upcoming_seconds: float = 0
+    upcoming_unknown: int = 0
+    week: int | None = None
+    title: str = ""
+    position: float = 0
+    duration: float | None = None
+    paused: bool = False
+
+
+def queue_estimate(progress):
+    seconds = progress.upcoming_seconds
+    unknown = progress.upcoming_unknown
+    if progress.title:
+        if progress.duration is None:
+            unknown += 1
+        else:
+            seconds += max(0, progress.duration - progress.position)
+    if unknown and not seconds:
+        return "время уточняется"
+    minutes = math.ceil(seconds / 60)
+    hours, minutes = divmod(minutes, 60)
+    time_left = f"{hours} ч {minutes:02d} мин" if hours else f"{minutes} мин"
+    return f"от {time_left}" if unknown else f"≈ {time_left}"
+
+
+def queue_bar(progress, width):
+    filled = progress.completed * width // progress.total if progress.total else width
+    return "█" * filled, "░" * (width - filled)
+
+
+def show_queue(progress):
+    filled, empty = queue_bar(progress, 20)
+    content = Text.assemble(
+        (filled, "bright_green"), (empty, "bright_magenta"), "\n",
+        (f"{progress.completed}/{progress.total}", "bold"),
+        f"  ·  Осталось {progress.total - progress.completed}  ·  {queue_estimate(progress)}",
+    )
+    _console.print(Panel(content, title=COURSE_NAME, subtitle="ОЧЕРЕДЬ", border_style="magenta", width=min(_console.width, 68)))
+
+
+def playback_toolbar(progress, width):
+    state = "Пауза" if progress.paused else progress.phase
+    top = [("class:queue-label", " ОЧЕРЕДЬ  ")]
+    if progress.total is None:
+        top.append(("", state))
+    else:
+        filled, empty = queue_bar(progress, 12 if width >= 62 else 6)
+        counts = f"  {progress.completed}/{progress.total} · {progress.total - progress.completed} ост."
+        estimate = queue_estimate(progress)
+        status = f" · {state}" if not progress.title else ""
+        top.extend([
+            ("class:queue-fill", filled),
+            ("class:queue-track", empty),
+            ("", counts),
+        ])
+        if sum(len(text) for _, text in top) + len(estimate + status) + 3 <= width:
+            top.append(("class:queue-muted", f" · {estimate}{status}"))
+        else:
+            top.append(("class:queue-muted", f"\n  {estimate}{status}"))
+
+    if progress.title:
+        position = f"{int(progress.position) // 60}:{int(progress.position) % 60:02d}"
+        duration = ""
+        if progress.duration is not None:
+            seconds = int(progress.duration)
+            duration = f"/{seconds // 60}:{seconds % 60:02d}"
+        current = Text(f"Week {progress.week} · {progress.title}")
+        suffix = f"  {position}{duration}  ·  {state}"
+        current.truncate(max(6, width - len(suffix) - 4), overflow="ellipsis")
+        top.extend([
+            ("class:queue-muted", f"\n ▸ {current.plain}"),
+            ("class:queue-paused" if progress.paused else "", suffix),
+        ])
+    hints = _CHAT_HINT if width >= len(_CHAT_HINT) else " pause/p  play/r  stop/q  help/h "
+    top.append(("class:queue-muted", "\n" + hints))
+    return FormattedText(top)
 
 
 def show_banner(mode):
@@ -197,12 +287,13 @@ async def _playback_chat(action, commands, session):
         return await worker
 
 
-def run_playback_chat(action, commands):
+def run_playback_chat(action, commands, progress):
     session = PromptSession(
         _CHAT_PROMPT,
         style=_CHAT_STYLE,
         completer=WordCompleter(list(_ALIASES), ignore_case=True),
-        bottom_toolbar=_CHAT_HINT,
+        bottom_toolbar=lambda: playback_toolbar(progress(), get_app().output.get_size().columns),
         placeholder=FormattedText([("class:placeholder", "Напиши команду и нажми Enter")]),
+        refresh_interval=0.5,
     )
     return asyncio.run(_playback_chat(action, commands, session))

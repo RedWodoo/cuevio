@@ -19,6 +19,7 @@ from playwright.sync_api import expect, sync_playwright
 from uninet_console import (
     NAME,
     VERSION,
+    QueueProgress,
     configure_log,
     interactive_terminal,
     log,
@@ -26,6 +27,7 @@ from uninet_console import (
     open_support,
     run_playback_chat,
     show_banner,
+    show_queue,
 )
 from uninet_settings import COURSE_CODE, COURSE_NAME, Preferences, load_preferences, save_preferences
 
@@ -61,6 +63,7 @@ class PlaybackControl:
     preferences: Preferences
     paused: bool = False
     commands: Queue[str] = field(default_factory=Queue)
+    progress: QueueProgress = field(default_factory=QueueProgress)
 
     def poll(self):
         while True:
@@ -74,6 +77,7 @@ class PlaybackControl:
                 pause = command == "pause"
                 if self.paused != pause:
                     self.paused = pause
+                    self.progress = replace(self.progress, paused=pause)
                     log("Пауза. Введи play, чтобы продолжить." if pause else "Продолжаю просмотр.", kind="control")
             elif command in ("mute", "sound"):
                 muted = command == "mute"
@@ -84,6 +88,12 @@ class PlaybackControl:
                         save_preferences(self.preferences)
                     except OSError:
                         log("Звук изменён для этого запуска. Сохранение недоступно.", kind="retry")
+
+    def record_media(self, state):
+        if self.progress.title:
+            self.progress = replace(
+                self.progress, position=state["position"], duration=state["duration"] or self.progress.duration
+            )
 
     def wait_until_running(self):
         self.poll()
@@ -101,6 +111,7 @@ class Clip:
     title: str
     credited: bool
     resume_at: int | None
+    duration: int | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,20 @@ class Lecture:
         if self.clips:
             return self.clips[index].credited
         return self.watched == self.total == 1
+
+
+@dataclass(frozen=True)
+class QueueItem:
+    week: int
+    lecture_index: int
+    clip_index: int
+    title: str
+    duration: int | None
+    position: int
+
+    @property
+    def remaining_seconds(self):
+        return max(0, self.duration - self.position) if self.duration is not None else None
 
 
 def setup_credentials(vault):
@@ -279,14 +304,21 @@ def read_lecture(card):
     count = COUNT.fullmatch(caption)
     watched, total = map(int, count.groups()) if count else (None, None)
     clips = tuple(Clip(**clip) for clip in card.locator(ROWS).evaluate_all(
-        r"""rows => rows.map(button => {
-            const resume = button.innerText.match(/\bresume at\s+((?:\d+:){1,2}\d{2})\b/i)?.[1];
-            return {
-                title: (button.querySelector('span.block.truncate')?.textContent || button.innerText).trim(),
-                credited: !!button.querySelector('span:first-child svg.text-status-success'),
-                resume_at: resume ? resume.split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0) : null
-            };
-        })"""
+        r"""rows => {
+            const seconds = time => time ? time.split(':').reduce((total, part) => total * 60 + Number(part), 0) : null;
+            return rows.map(button => {
+                const resume = button.innerText.match(/\bresume at\s+((?:\d+:){1,2}\d{2})\b/i)?.[1];
+                const duration = [...button.querySelectorAll('span')]
+                    .map(span => span.textContent.trim())
+                    .find(text => /^(?:\d+:){1,2}\d{2}$/.test(text));
+                return {
+                    title: (button.querySelector('span.block.truncate')?.textContent || button.innerText).trim(),
+                    credited: !!button.querySelector('span:first-child svg.text-status-success'),
+                    resume_at: seconds(resume),
+                    duration: seconds(duration)
+                };
+            });
+        }"""
     ))
     completed = caption.lower() == "lecture completed" or (total is not None and watched == total)
     return Lecture(completed, watched, total, clips)
@@ -405,6 +437,7 @@ def watch_until_end(card, state, control):
                     f"Позиция плеера изменилась с {last_position:.1f} с до "
                     f"{state['position']:.1f} с за {elapsed:.1f} с. Просмотр остановлен."
                 )
+            control.record_media(state)
             if state["ended"]:
                 return
             if delta > 0.05:
@@ -457,6 +490,8 @@ def play_clip(page, card, lecture, index, control):
             first_state = start_video(card, resume_at=resume_at, control=control)
             if abs(first_state["rate"] - 1) > 0.001:
                 raise UniNetError("Плеер запущен со скоростью, отличной от 1×.")
+            control.progress = replace(control.progress, phase="Просмотр")
+            control.record_media(first_state)
             minutes, seconds = divmod(int(first_state["position"]), 60)
             if resume_at is not None and first_state["position"] > 3:
                 log(f"Плеер продолжил с {minutes}:{seconds:02d} на 1×.", kind="video")
@@ -468,6 +503,7 @@ def play_clip(page, card, lecture, index, control):
             if attempt == 2:
                 raise UniNetError(f"Не удалось восстановить плеер. {error}") from None
             reason = str(error) if isinstance(error, PlaybackError) else "Плеер не ответил вовремя."
+            control.progress = replace(control.progress, phase="Восстановление")
             log(f"{reason} Восстанавливаю плеер и повторяю запуск.", kind="retry")
             close_popup(page)
             if attempt == 0 and len(lecture.clips) > 1:
@@ -479,10 +515,15 @@ def play_clip(page, card, lecture, index, control):
                     select_clip(card, index)
 
 
-def process_course(page, *, check, control):
+def scan_course(page, *, check, control):
+    items = []
     locked_weeks = []
+    control.progress = QueueProgress(phase="Собираю очередь", paused=control.paused)
+    if not check:
+        log("Собираю очередь по доступным неделям.")
     for number in list_weeks(page):
         control.wait_until_running()
+        control.progress = replace(control.progress, phase=f"Проверяю Week {number}")
         open_week(page, number)
         main = page.locator("main")
         opens = main.get_by_text(re.compile(r"^Opens\s+\S.+$", re.I)).first
@@ -493,43 +534,86 @@ def process_course(page, *, check, control):
         if main.get_by_text("Week completed", exact=True).is_visible():
             log(f"Week {number} · все ролики засчитаны.")
             continue
-        for card in lecture_cards(page):
+        for lecture_index, card in enumerate(lecture_cards(page)):
             lecture = read_lecture(card)
             name = card.get_by_role("heading", level=3).inner_text()
             if lecture.completed:
                 log(f"Week {number} · {name} · все ролики засчитаны.")
                 continue
-            if lecture.total and not lecture.clips and lecture.total != 1:
+            if lecture.total and lecture.total != (len(lecture.clips) or 1):
                 raise UniNetError(f"Week {number} · список роликов не загрузился.")
             if check:
                 log(f"Week {number} · {name} · просмотрено {lecture.watched}/{lecture.total}.")
-                for clip in lecture.clips:
-                    if not clip.credited:
-                        log(f"  К просмотру — {clip.title}")
-                continue
-            for index in range(len(lecture.clips) or 1):
-                control.wait_until_running()
-                lecture = read_lecture(card)
-                if lecture.credited(index):
+            clips = lecture.clips or (Clip(name, False, None),)
+            for clip_index, clip in enumerate(clips):
+                if clip.credited:
                     continue
-                title = lecture.clips[index].title if lecture.clips else "Видео"
-                log(f"Week {number} · {title}", kind="video")
-                play_clip(page, card, lecture, index, control)
-                confirmed = wait_credit(card, index, 25, control)
-                if not confirmed:
-                    reload_lecture(page)
-                    confirmed = wait_credit(card, index, 12, control)
-                if not confirmed:
-                    raise UniNetError(f"UniNet пока не засчитал Week {number} · {title}.")
-                log("UniNet засчитал просмотр.", kind="done")
-                if control.preferences.one_video:
-                    log("Режим одного ролика завершён.", kind="done")
-                    return
-                if read_lecture(card).completed:
-                    break
+                items.append(QueueItem(number, lecture_index, clip_index, clip.title, clip.duration, clip.resume_at or 0))
+                if check:
+                    log(f"  К просмотру — {clip.title}")
+    return items, locked_weeks
+
+
+def process_course(page, *, check, control):
+    items, locked_weeks = scan_course(page, check=check, control=control)
+    seconds_left = sum(item.remaining_seconds or 0 for item in items)
+    unknown = sum(item.remaining_seconds is None for item in items)
+    control.progress = QueueProgress(
+        phase="Очередь готова", total=len(items), upcoming_seconds=seconds_left, upcoming_unknown=unknown,
+        paused=control.paused,
+    )
+    show_queue(control.progress)
     if check:
         log("Проверка курса закончена.", kind="done")
-    elif locked_weeks:
+        return
+
+    current_week = None
+    for completed, item in enumerate(items, start=1):
+        control.wait_until_running()
+        if item.week != current_week:
+            open_week(page, item.week)
+            cards = lecture_cards(page)
+            current_week = item.week
+        if item.lecture_index >= len(cards):
+            raise UniNetError(f"Week {item.week} · список лекций изменился. Запусти просмотр снова.")
+        card = cards[item.lecture_index]
+        lecture = read_lecture(card)
+        index = item.clip_index
+        clips = lecture.clips
+        if not lecture.completed:
+            if clips and index >= len(clips):
+                raise UniNetError(f"Week {item.week} · список роликов изменился. Запусти просмотр снова.")
+            title = clips[index].title if clips else card.get_by_role("heading", level=3).inner_text()
+            if title != item.title:
+                raise UniNetError(f"Week {item.week} · список роликов изменился. Запусти просмотр снова.")
+
+        seconds_left -= item.remaining_seconds or 0
+        unknown -= item.remaining_seconds is None
+        already_credited = lecture.credited(index)
+        if not already_credited:
+            control.progress = replace(
+                control.progress, phase="Загрузка", week=item.week, title=item.title,
+                position=item.position, duration=item.duration,
+                upcoming_seconds=seconds_left, upcoming_unknown=unknown,
+            )
+            log(f"Week {item.week} · {item.title}", kind="video")
+            play_clip(page, card, lecture, index, control)
+            control.progress = replace(control.progress, phase="Ждём зачёт")
+            if not wait_credit(card, index, 25, control):
+                reload_lecture(page)
+                if not wait_credit(card, index, 12, control):
+                    raise UniNetError(f"UniNet пока не засчитал Week {item.week} · {item.title}.")
+        control.progress = replace(
+            control.progress, phase="Засчитано", completed=completed, week=None, title="",
+            position=0, duration=None, upcoming_seconds=seconds_left, upcoming_unknown=unknown,
+        )
+        status = "Ролик уже был засчитан." if already_credited else "UniNet засчитал просмотр."
+        log(f"{status} Очередь {completed}/{len(items)}.", kind="done")
+        if control.preferences.one_video and not already_credited:
+            log("Режим одного ролика завершён.", kind="done")
+            return
+
+    if locked_weeks:
         weeks = ", ".join(f"Week {number}" for number in locked_weeks)
         log(f"Все доступные видео засчитаны. Портал пока не открыл {weeks}.", kind="done")
     else:
@@ -561,6 +645,7 @@ def run(*, check, credentials, control, keep_on_error=False):
             log("Просмотр остановлен из консоли.", kind="control")
             return 0
         except (BrowserError, AssertionError, UniNetError) as error:
+            control.progress = replace(control.progress, phase="Сбой")
             if isinstance(error, UniNetError):
                 message = str(error)
             elif at_student_portal(page.url):
@@ -599,7 +684,7 @@ def run_action(mode, vault, control):
         def action():
             return run(check=mode == "check", credentials=credentials, control=control, keep_on_error=chat)
 
-        return run_playback_chat(action, control.commands) if chat else action()
+        return run_playback_chat(action, control.commands, lambda: control.progress) if chat else action()
     except UniNetError as error:
         log(str(error), kind="error")
         return 1
@@ -632,6 +717,22 @@ def settings_menu(preferences):
             log("Настройки действуют до закрытия консоли. Сохранение недоступно.", kind="retry")
 
 
+def course_menu():
+    while True:
+        choice = menu_choice((
+            ("1 / physics", f"{COURSE_NAME} · {COURSE_CODE} · доступен"),
+            ("2 / demo", "Другой предмет · демо"),
+            ("0 / back", "Назад"),
+        ))
+        if choice in ("0", "back"):
+            return
+        if choice in ("1", "physics"):
+            log(f"Выбран предмет {COURSE_NAME}.", kind="done")
+            return
+        if choice in ("2", "demo"):
+            log(f"Это пример списка предметов. К просмотру доступен {COURSE_NAME}.", kind="control")
+
+
 def run_menu(vault, preferences):
     show_banner("menu")
     actions = {"1": "play", "play": "play", "2": "check", "check": "check", "4": "setup", "setup": "setup"}
@@ -644,6 +745,7 @@ def run_menu(vault, preferences):
             ("3 / settings", f"Настройки · {sound} · {scope}"),
             ("4 / setup", "Настроить вход"),
             ("5 / support", "Поддержка"),
+            ("6 / course", f"Выбрать предмет · {COURSE_NAME}"),
             ("0 / exit", "Выход"),
         ))
         if choice in ("0", "exit"):
@@ -652,6 +754,8 @@ def run_menu(vault, preferences):
             preferences = settings_menu(preferences)
         elif choice in ("5", "support"):
             open_support()
+        elif choice in ("6", "course"):
+            course_menu()
         elif choice in actions:
             mode = actions[choice]
             control = PlaybackControl(preferences)
