@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import os
 import sys
 import time
 import webbrowser
@@ -26,9 +27,17 @@ from uninet_settings import COURSE_NAME, DATA_DIR
 
 
 NAME = "Cuevio"
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 REPOSITORY_URL = "https://github.com/RedWodoo/cuevio"
 LOG_PATH = DATA_DIR / "logs" / "uninet.log"
+
+# A native Windows console has its own capabilities. A launcher can inherit
+# TERM=dumb from a parent process that had redirected input and output.
+if (
+    sys.platform == "win32" and sys.stdin.isatty() and sys.stdout.isatty()
+    and os.environ.get("TERM", "").lower() in {"dumb", "unknown"}
+):
+    os.environ.pop("TERM", None)
 
 _console = Console(highlight=False)
 _playback_output = ContextVar("playback_output", default=None)
