@@ -26,7 +26,7 @@ from uninet_settings import COURSE_NAME, DATA_DIR
 
 
 NAME = "Cuevio"
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 REPOSITORY_URL = "https://github.com/RedWodoo/cuevio"
 LOG_PATH = DATA_DIR / "logs" / "uninet.log"
 
@@ -125,6 +125,14 @@ def show_queue(progress):
     _console.print(Panel(
         content, title=f"Очередь · {COURSE_NAME}", title_align="left",
         border_style="magenta", width=min(_console.width, 68),
+    ))
+
+
+def show_playback_complete(message):
+    _logger.info("Просмотр завершён. %s", message)
+    _console.print(Panel(
+        Text(message), title="Просмотр завершён", title_align="left",
+        border_style="bright_green", width=min(_console.width, 68),
     ))
 
 

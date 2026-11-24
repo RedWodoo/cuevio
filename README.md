@@ -45,6 +45,7 @@ Choose **course** (6) to see the subject picker. Physics I is available, and the
 - New videos play from the beginning. Partially watched videos continue from the position saved by UniNet when the playlist shows a resume time.
 - The script uses the portal's own player controls and waits at normal speed. If the player fails to start, it can reselect the video or reload the page.
 - Locked weeks are reported with their opening date. The queue handles video lectures only.
+- When UniNet has credited every available video, Cuevio closes its Chrome window, shows what finished and which weeks are still locked, and returns to the main menu in an interactive terminal.
 - Close the Chrome window or press **Ctrl+C** in the launcher to stop. The next run reads the current progress from UniNet.
 
 | Command | Shortcut | Action |

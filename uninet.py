@@ -27,6 +27,7 @@ from uninet_console import (
     open_support,
     run_playback_chat,
     show_banner,
+    show_playback_complete,
     show_queue,
 )
 from uninet_settings import COURSE_CODE, COURSE_NAME, Preferences, load_preferences, save_preferences
@@ -64,6 +65,7 @@ class PlaybackControl:
     paused: bool = False
     commands: Queue[str] = field(default_factory=Queue)
     progress: QueueProgress = field(default_factory=QueueProgress)
+    completion: str | None = None
 
     def poll(self):
         while True:
@@ -609,15 +611,13 @@ def process_course(page, *, check, control):
         )
         status = "Ролик уже был засчитан." if already_credited else "UniNet засчитал просмотр."
         log(f"{status} Очередь {completed}/{len(items)}.", kind="done")
-        if control.preferences.one_video and not already_credited:
-            log("Режим одного ролика завершён.", kind="done")
-            return
+        if control.preferences.one_video and not already_credited and completed < len(items):
+            return f"Режим одного ролика завершён. В очереди осталось {len(items) - completed}."
 
     if locked_weeks:
         weeks = ", ".join(f"Week {number}" for number in locked_weeks)
-        log(f"Все доступные видео засчитаны. Портал пока не открыл {weeks}.", kind="done")
-    else:
-        log("Все видео курса засчитаны.", kind="done")
+        return f"Все доступные видео засчитаны. Портал пока не открыл {weeks}."
+    return "Все видео курса засчитаны."
 
 
 def run(*, check, credentials, control, keep_on_error=False):
@@ -633,14 +633,14 @@ def run(*, check, credentials, control, keep_on_error=False):
             control.wait_until_running()
             open_course(page, credentials)
             try:
-                process_course(page, check=check, control=control)
+                completion = process_course(page, check=check, control=control)
             except (BrowserError, AssertionError, UniNetError):
                 login_page = origin(page.url) == SSO or page.url.startswith(f"{PORTAL}/login")
                 if not login_page:
                     raise
                 log("Сессия закончилась. Вхожу снова и проверяю прогресс.", kind="retry")
                 open_course(page, credentials)
-                process_course(page, check=check, control=control)
+                completion = process_course(page, check=check, control=control)
         except PlaybackStopped:
             log("Просмотр остановлен из консоли.", kind="control")
             return 0
@@ -666,6 +666,7 @@ def run(*, check, credentials, control, keep_on_error=False):
             return 1
         finally:
             browser.close()
+    control.completion = completion
     return 0
 
 
@@ -684,7 +685,10 @@ def run_action(mode, vault, control):
         def action():
             return run(check=mode == "check", credentials=credentials, control=control, keep_on_error=chat)
 
-        return run_playback_chat(action, control.commands, lambda: control.progress) if chat else action()
+        result = run_playback_chat(action, control.commands, lambda: control.progress) if chat else action()
+        if control.completion is not None:
+            show_playback_complete(control.completion)
+        return result
     except UniNetError as error:
         log(str(error), kind="error")
         return 1
@@ -795,8 +799,10 @@ def main():
             if result:
                 return result
         if mode:
-            return run_action(mode, vault, control)
-        return run_menu(vault, preferences)
+            result = run_action(mode, vault, control)
+            if mode != "play" or not interactive or control.completion is None:
+                return result
+        return run_menu(vault, control.preferences)
     except KeyringError:
         log("Диспетчер учётных данных Windows недоступен.", kind="error")
         return 1
