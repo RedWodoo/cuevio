@@ -9,19 +9,26 @@ Cuevio opens Chrome after you choose playback, finds the first unfinished lectur
 
 ## Quick start
 
-You need Windows, Python 3.10 or newer on your PATH, Google Chrome, and a KBTU account enrolled in Physics I. Download and extract the repository, then open PowerShell in the extracted folder.
+You need Windows, Git and Python 3.10 or newer on your PATH, Google Chrome, and a KBTU account enrolled in Physics I.
 
-**Open the menu.**
+**Install Cuevio on your desktop.** Open PowerShell, then copy and run this block.
 
-    .\run-uninet.cmd
+~~~powershell
+$cuevioDir = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Cuevio'
+git clone https://github.com/RedWodoo/cuevio.git "$cuevioDir"
+Set-Location -LiteralPath "$cuevioDir"
+.\run-uninet.cmd
+~~~
 
-You can also double-click the launcher. On the first run it creates a local Python environment and installs the dependencies. In the command field, enter **setup** (4) to set up your KBTU sign-in, **settings** (3) to change playback settings, or **play** (1) to start playback.
+For later launches, open the **Cuevio** folder on your desktop and double-click **run-uninet.cmd**.
 
-Enter your KBTU username or email and password in the local terminal. Python 3.14 and newer show asterisks while you type. In older versions, the password prompt hides typed characters.
+On the first launch, Cuevio installs its Python dependencies in the project folder and asks for your KBTU login and password if they have not been saved. Python 3.14 and newer show asterisks while you type. In older versions, the password prompt hides typed characters.
+
+Cuevio then opens the menu. Enter **play** (1) to start playback, **settings** (3) to change playback options, or **setup** (4) to update your saved sign-in.
 
 | Command | What it does |
 | --- | --- |
-| .\run-uninet.cmd | Open the menu |
+| .\run-uninet.cmd | Set up sign-in on the first launch, then open the menu |
 | .\run-uninet.cmd --play | Start playback immediately with your saved settings |
 | .\run-uninet.cmd --setup | Save or update the credentials on this computer |
 | .\run-uninet.cmd --check | List completion marks and remaining videos without starting playback |

@@ -21,7 +21,7 @@ from uninet_settings import COURSE_NAME, DATA_DIR
 
 
 NAME = "Cuevio"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 REPOSITORY_URL = "https://github.com/RedWodoo/cuevio"
 LOG_PATH = DATA_DIR / "logs" / "uninet.log"
 
@@ -32,7 +32,7 @@ _logger.addHandler(logging.NullHandler())
 
 _WORDMARK = (
     "█▀▀   █ █   █▀▀   █ █   ▀█▀   █▀█",
-    "█     █ █   ██▄   ▀▄▀    █    █ █",
+    "█     █ █   █▀    ▀▄▀    █    █ █",
     "▀▀▀   ▀▀▀   ▀▀▀    ▀    ▀▀▀   ▀▀▀",
 )
 _MODES = {

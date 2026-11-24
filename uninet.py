@@ -11,6 +11,7 @@ from queue import Empty, Queue
 from urllib.parse import urljoin, urlsplit
 
 from keyring.backends.Windows import WinVaultKeyring
+from keyring.errors import KeyringError
 from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import TimeoutError as BrowserTimeout
 from playwright.sync_api import expect, sync_playwright
@@ -118,20 +119,23 @@ class Lecture:
 
 
 def setup_credentials(vault):
-    username = input("Логин или почта KBTU: ").strip()
-    if sys.version_info >= (3, 14):
-        password = getpass.getpass("Пароль KBTU (звёздочки показывают ввод): ", echo_char="*")
-    else:
-        password = getpass.getpass("Пароль KBTU (символы при вводе скрыты): ")
-    if not username or not password:
-        raise UniNetError("Заполни логин и пароль.")
+    if not sys.stdin.isatty():
+        raise UniNetError("Открой настройку в консоли Windows для скрытого ввода пароля.")
+    username = ""
+    while not username:
+        username = input("Логин или почта KBTU: ").strip()
+    password = ""
+    while not password:
+        if sys.version_info >= (3, 14):
+            password = getpass.getpass("Пароль KBTU (звёздочки показывают ввод): ", echo_char="*")
+        else:
+            password = getpass.getpass("Пароль KBTU (символы при вводе скрыты): ")
     vault.set_password(
         VAULT_SERVICE,
         VAULT_ENTRY,
         json.dumps({"username": username, "password": password}),
     )
     log("Данные для входа сохранены в Диспетчере учётных данных Windows.", kind="done")
-    log("Для просмотра запусти run-uninet.cmd.")
 
 
 @contextmanager
@@ -666,7 +670,8 @@ def main():
     mode = parser.parse_args().mode
     if mode == "support":
         return open_support()
-    if mode is None and not interactive_terminal():
+    interactive = interactive_terminal()
+    if mode is None and not interactive:
         show_banner("menu")
         log("Открой меню в консоли Windows. Для прямого запуска используй run-uninet.cmd --play.")
         return 0
@@ -679,9 +684,18 @@ def main():
         preferences = Preferences()
     vault = WinVaultKeyring()
     try:
+        control = PlaybackControl(preferences)
+        if mode != "setup" and interactive and not vault.get_password(VAULT_SERVICE, VAULT_ENTRY):
+            log("Первый запуск. Сначала настрой вход в KBTU UniNet.")
+            result = run_action("setup", vault, control)
+            if result:
+                return result
         if mode:
-            return run_action(mode, vault, PlaybackControl(preferences))
+            return run_action(mode, vault, control)
         return run_menu(vault, preferences)
+    except KeyringError:
+        log("Диспетчер учётных данных Windows недоступен.", kind="error")
+        return 1
     except EOFError:
         return 0
     except KeyboardInterrupt:
